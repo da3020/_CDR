@@ -1,41 +1,50 @@
-Attribute VB_Name = "SUB_OzonArchive"
 Option Explicit
 
-' ===== ��������� =====
-Const ROWS_PER_COLUMN As Long = 5
-
-Const START_X As Double = 10    ' ��
-Const START_Y As Double = 280   ' �� (���� ��������)
-
-Const ROW_GAP As Double = 10    ' ���������� ����� �������� (��)
-Const COL_GAP As Double = 20    ' ���������� ����� ��������� (��)
-
-' ===== ����� ���� ���� �� ������ =====
-Const MISSING_TEXT_SIZE As Double = 20 ' pt
-' =========
+' =========================================================
+' ================== НАСТРОЙКИ ============================
+' =========================================================
 
 
 
+' --- Раскладка ---
+Const ROWS_PER_COLUMN As Long = 5      ' сколько объектов в столбце
+Const START_X As Double = 10            ' мм, левый край
+Const START_Y As Double = 280           ' мм, верх страницы
+Const ROW_GAP As Double = 10            ' мм, между строками
+Const COL_GAP As Double = 20            ' мм, между столбцами
 
+' --- Текст для отсутствующих файлов ---
+Const MISSING_TEXT_SIZE As Double = 200  ' pt
+Const MISSING_TEXT_COLOR_R As Long = 255
+Const MISSING_TEXT_COLOR_G As Long = 0
+Const MISSING_TEXT_COLOR_B As Long = 0
+
+' =========================================================
+' ================== ОСНОВНОЙ МАКРОС ======================
+' =========================================================
 
 Sub CollectFlagsToPrint()
 
-    Dim sourceFolder As String
-    Dim ordersFile As String
-    Dim outputFile As String
+' --- Пути ---
+Dim SOURCE_FOLDER As String
+Dim ORDERS_FILE As String
+Dim OUTPUT_FILE As String
 
-    sourceFolder = "D:\_CDR\archive\"
-    ordersFile = "D:\_CDR\orders.txt"
-    outputFile = "D:\_CDR\�� ������_001.cdr"
+SOURCE_FOLDER = "D:\_CDR\archive\"
+ORDERS_FILE = "D:\_CDR\orders.txt"
+OUTPUT_FILE = "D:\_CDR\На печать_001.cdr"
+
+
 
     Dim outputDoc As Document
     Set outputDoc = Application.CreateDocument
 
     Application.Optimization = True
     Application.EventsEnabled = False
+    Application.Visible = False
 
     Dim orders As Collection
-    Set orders = ReadUtf8Lines(ordersFile)
+    Set orders = ReadUtf8Lines(ORDERS_FILE)
 
     Dim index As Long
     index = 0
@@ -43,10 +52,12 @@ Sub CollectFlagsToPrint()
     Dim line As Variant
     For Each line In orders
 
-        If line <> "" Then
+        If Trim(line) <> "" Then
 
             Dim parts() As String
             parts = Split(line, "_")
+
+            If UBound(parts) < 1 Then GoTo NextLine
 
             Dim fileName As String
             Dim groupName As String
@@ -56,8 +67,9 @@ Sub CollectFlagsToPrint()
 
             Dim placedShape As Shape
             Dim fullPath As String
-            fullPath = sourceFolder & fileName
+            fullPath = SOURCE_FOLDER & fileName
 
+            ' ---------- ЕСЛИ ФАЙЛ СУЩЕСТВУЕТ ----------
             If FileExists(fullPath) Then
 
                 Dim doc As Document
@@ -71,30 +83,40 @@ Sub CollectFlagsToPrint()
                     Set placedShape = outputDoc.ActiveLayer.Paste
                 Else
                     Set placedShape = CreateMissingText(outputDoc, _
-                        fileName & "_" & groupName & " �� ������� ������")
+                        fileName & "_" & groupName & " — ГРУППА НЕ НАЙДЕНА")
                 End If
 
                 doc.Close
 
+            ' ---------- ЕСЛИ ФАЙЛА НЕТ ----------
             Else
                 Set placedShape = CreateMissingText(outputDoc, _
-                    fileName & " �� ������")
+                    fileName & " — ФАЙЛ НЕ НАЙДЕН")
             End If
 
-            Call PlaceInGrid(placedShape, index)
+            ' ---------- РАСКЛАДКА ----------
+            PlaceInGrid placedShape, index
             index = index + 1
 
         End If
+
+NextLine:
     Next line
 
-    outputDoc.SaveAs outputFile
+    outputDoc.SaveAs OUTPUT_FILE
 
+    Application.Visible = True
     Application.Optimization = False
     Application.EventsEnabled = True
 
-    MsgBox "������. ���������: " & index & " ��������."
+    MsgBox "Готово." & vbCrLf & _
+           "Размещено объектов: " & index, vbInformation
 
 End Sub
+
+' =========================================================
+' ================== РАСКЛАДКА ============================
+' =========================================================
 
 Sub PlaceInGrid(s As Shape, index As Long)
 
@@ -114,20 +136,17 @@ Sub PlaceInGrid(s As Shape, index As Long)
 
 End Sub
 
-
-
-
-Function FileExists(path As String) As Boolean
-    FileExists = (Dir(path) <> "")
-End Function
+' =========================================================
+' ============ ТЕКСТ ПРИ ОШИБКАХ ==========================
+' =========================================================
 
 Function CreateMissingText(doc As Document, txt As String) As Shape
 
     Dim s As Shape
     Set s = doc.ActiveLayer.CreateArtisticText(0, 0, txt)
 
-    With s.Text.Story.TextRange
-        .FONTSIZE = MISSING_TEXT_SIZE
+    With s.Text.Story.Characters.All
+        .Size = MISSING_TEXT_SIZE
         .Fill.UniformColor.RGBAssign 255, 0, 0
     End With
 
@@ -136,9 +155,9 @@ Function CreateMissingText(doc As Document, txt As String) As Shape
 End Function
 
 
-
-
-
+' =========================================================
+' ================= ПОИСК ГРУППЫ ==========================
+' =========================================================
 
 Function FindGroupByName(doc As Document, groupName As String) As Shape
 
@@ -160,6 +179,17 @@ Function FindGroupByName(doc As Document, groupName As String) As Shape
 
 End Function
 
+' =========================================================
+' ============ ПРОВЕРКА ФАЙЛА =============================
+' =========================================================
+
+Function FileExists(path As String) As Boolean
+    FileExists = (Dir(path) <> "")
+End Function
+
+' =========================================================
+' ============ ЧТЕНИЕ UTF-8 ===============================
+' =========================================================
 
 Function ReadUtf8Lines(filePath As String) As Collection
 
@@ -168,13 +198,13 @@ Function ReadUtf8Lines(filePath As String) As Collection
     Set stm = CreateObject("ADODB.Stream")
 
     With stm
-        .Type = 2 ' text
+        .Type = 2            ' text
         .CharSet = "utf-8"
         .Open
         .LoadFromFile filePath
 
         Do Until .EOS
-            lines.Add Trim(.ReadText(-2)) ' -2 = read line
+            lines.Add Trim(.ReadText(-2)) ' читать построчно
         Loop
 
         .Close
