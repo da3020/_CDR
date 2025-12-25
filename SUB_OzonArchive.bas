@@ -1,53 +1,50 @@
 Option Explicit
 
-
 ' =========================================================
-' Version: 1.1.1
+' Version: 1.2.1
 ' CorelDRAW: 2021 (25.0.0.230)
 '
-' Критично:
-' - Не использовать s.Text.FontSize / TextRange
-' - Использовать Characters.All.Size
-' - Пути объявлять через Dim, не Const
+' Функции:
+' - orders.txt = список артикулов (8457, 4855M, 7898L ...)
+' - поиск CDR по артикулу в имени (с ведущими нулями)
+' - рекурсивный обход всех подпапок
+' - суффикс > размер группы
+' - дубликаты > визуальная ошибка
+'
+' КРИТИЧНО:
+' - Форматирование текста: Characters.All.Size
+' - Пути объявлять через Dim
 ' =========================================================
 
 
-
-' =========================================================
 ' ================== НАСТРОЙКИ ============================
-' =========================================================
-
-
 
 ' --- Раскладка ---
-Const ROWS_PER_COLUMN As Long = 5      ' сколько объектов в столбце
-Const START_X As Double = 10            ' мм, левый край
-Const START_Y As Double = 280           ' мм, верх страницы
-Const ROW_GAP As Double = 10            ' мм, между строками
-Const COL_GAP As Double = 20            ' мм, между столбцами
+Const ROWS_PER_COLUMN As Long = 5
+Const START_X As Double = 10
+Const START_Y As Double = 280
+Const ROW_GAP As Double = 10
+Const COL_GAP As Double = 20
 
-' --- Текст для отсутствующих файлов ---
-Const MISSING_TEXT_SIZE As Double = 200  ' pt
-Const MISSING_TEXT_COLOR_R As Long = 255
-Const MISSING_TEXT_COLOR_G As Long = 0
-Const MISSING_TEXT_COLOR_B As Long = 0
+' --- Текст ошибок ---
+Const ERROR_TEXT_SIZE As Double = 200
+Const ERR_R As Long = 255
+Const ERR_G As Long = 0
+Const ERR_B As Long = 0
 
-' =========================================================
+
 ' ================== ОСНОВНОЙ МАКРОС ======================
-' =========================================================
 
 Sub CollectFlagsToPrint()
 
-' --- Пути ---
-Dim SOURCE_FOLDER As String
-Dim ORDERS_FILE As String
-Dim OUTPUT_FILE As String
+    ' --- Пути (UNC разрешён, экранирование не нужно) ---
+    Dim SOURCE_FOLDER As String
+    Dim ORDERS_FILE As String
+    Dim OUTPUT_FILE As String
 
-SOURCE_FOLDER = "D:\_CDR\archive\"
-ORDERS_FILE = "D:\_CDR\orders.txt"
-OUTPUT_FILE = "D:\_CDR\На печать_001.cdr"
-
-
+    SOURCE_FOLDER = "\\Keenetic-5026\ugreen\STORE\! СУБЛИМАЦИЯ\! ! ! ФЛАГИ\"
+    ORDERS_FILE = "D:\_CDR\orders.txt"
+    OUTPUT_FILE = "D:\_CDR\На печать_001.cdr"
 
     Dim outputDoc As Document
     Set outputDoc = Application.CreateDocument
@@ -65,53 +62,55 @@ OUTPUT_FILE = "D:\_CDR\На печать_001.cdr"
     Dim line As Variant
     For Each line In orders
 
-        If Trim(line) <> "" Then
+        line = Trim(line)
+        If line = "" Then GoTo NextLine
 
-            Dim parts() As String
-            parts = Split(line, "_")
+        Dim baseArticle As String
+        Dim suffix As String
+        ParseArticle CStr(line), baseArticle, suffix
 
-            If UBound(parts) < 1 Then GoTo NextLine
+        Dim matches As Collection
+        Set matches = FindCdrFilesByArticle(SOURCE_FOLDER, baseArticle)
 
-            Dim fileName As String
+        Dim placedShape As Shape
+
+        ' ---- ФАЙЛ НЕ НАЙДЕН ----
+        If matches.Count = 0 Then
+
+            Set placedShape = CreateErrorText(outputDoc, _
+                baseArticle & " — ФАЙЛ НЕ НАЙДЕН")
+
+        ' ---- НАЙДЕНЫ ДУБЛИКАТЫ ----
+        ElseIf matches.Count > 1 Then
+
+            Set placedShape = CreateErrorText(outputDoc, _
+                baseArticle & " — НАЙДЕНЫ ДУБЛИКАТЫ")
+
+        ' ---- НАЙДЕН РОВНО ОДИН ФАЙЛ ----
+        Else
+
+            Dim doc As Document
+            Set doc = Application.OpenDocument(matches(1))
+
             Dim groupName As String
+            groupName = GetGroupName(baseArticle, suffix)
 
-            fileName = parts(0)
-            groupName = parts(1)
+            Dim shp As Shape
+            Set shp = FindGroupByName(doc, groupName)
 
-            Dim placedShape As Shape
-            Dim fullPath As String
-            fullPath = SOURCE_FOLDER & fileName
-
-            ' ---------- ЕСЛИ ФАЙЛ СУЩЕСТВУЕТ ----------
-            If FileExists(fullPath) Then
-
-                Dim doc As Document
-                Set doc = Application.OpenDocument(fullPath)
-
-                Dim shp As Shape
-                Set shp = FindGroupByName(doc, groupName)
-
-                If Not shp Is Nothing Then
-                    shp.Copy
-                    Set placedShape = outputDoc.ActiveLayer.Paste
-                Else
-                    Set placedShape = CreateMissingText(outputDoc, _
-                        fileName & "_" & groupName & " — ГРУППА НЕ НАЙДЕНА")
-                End If
-
-                doc.Close
-
-            ' ---------- ЕСЛИ ФАЙЛА НЕТ ----------
+            If Not shp Is Nothing Then
+                shp.Copy
+                Set placedShape = outputDoc.ActiveLayer.Paste
             Else
-                Set placedShape = CreateMissingText(outputDoc, _
-                    fileName & " — ФАЙЛ НЕ НАЙДЕН")
+                Set placedShape = CreateErrorText(outputDoc, _
+                    baseArticle & " — ГРУППА НЕ НАЙДЕНА")
             End If
 
-            ' ---------- РАСКЛАДКА ----------
-            PlaceInGrid placedShape, index
-            index = index + 1
-
+            doc.Close
         End If
+
+        PlaceInGrid placedShape, index
+        index = index + 1
 
 NextLine:
     Next line
@@ -127,9 +126,103 @@ NextLine:
 
 End Sub
 
-' =========================================================
+
+' ================== РАЗБОР АРТИКУЛА ======================
+
+Sub ParseArticle(src As String, ByRef baseArticle As String, ByRef suffix As String)
+
+    Dim i As Long
+    baseArticle = ""
+    suffix = ""
+
+    For i = 1 To Len(src)
+        If Mid(src, i, 1) Like "[0-9]" Then
+            baseArticle = baseArticle & Mid(src, i, 1)
+        Else
+            suffix = UCase(Mid(src, i))
+            Exit For
+        End If
+    Next i
+
+End Sub
+
+
+' ================== ПОИСК CDR (РЕКУРСИВНО) ===============
+
+Function FindCdrFilesByArticle(rootFolder As String, article As String) As Collection
+
+    Dim result As New Collection
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    ScanFolderRecursive fso.GetFolder(rootFolder), article, result
+
+    Set FindCdrFilesByArticle = result
+
+End Function
+
+
+Sub ScanFolderRecursive(fld As Object, article As String, result As Collection)
+
+    Dim f As Object
+    For Each f In fld.Files
+        If LCase(GetExtension(f.Name)) = "cdr" Then
+            If IsArticleMatch(f.Name, article) Then
+                result.Add f.path
+            End If
+        End If
+    Next f
+
+    Dim subFld As Object
+    For Each subFld In fld.SubFolders
+        ScanFolderRecursive subFld, article, result
+    Next subFld
+
+End Sub
+
+
+Function GetExtension(fileName As String) As String
+    GetExtension = Mid(fileName, InStrRev(fileName, ".") + 1)
+End Function
+
+
+Function IsArticleMatch(fileName As String, article As String) As Boolean
+
+    Dim pos As Long
+    pos = InStr(fileName, "_")
+    If pos = 0 Then Exit Function
+
+    Dim namePart As String
+    namePart = Left(fileName, pos - 1)
+
+    On Error Resume Next
+    namePart = CStr(CLng(namePart)) ' убираем ведущие нули
+    On Error GoTo 0
+
+    IsArticleMatch = (namePart = article)
+
+End Function
+
+
+' ================== СОПОСТАВЛЕНИЕ ГРУПП ==================
+
+Function GetGroupName(article As String, suffix As String) As String
+
+    Select Case suffix
+        Case "S"
+            GetGroupName = article & ":60x40"
+        Case "M"
+            GetGroupName = article & ":105x70"
+        Case "L"
+            GetGroupName = article & ":225x150"
+        Case Else
+            GetGroupName = article & ":135x90"
+    End Select
+
+End Function
+
+
 ' ================== РАСКЛАДКА ============================
-' =========================================================
 
 Sub PlaceInGrid(s As Shape, index As Long)
 
@@ -149,28 +242,25 @@ Sub PlaceInGrid(s As Shape, index As Long)
 
 End Sub
 
-' =========================================================
-' ============ ТЕКСТ ПРИ ОШИБКАХ ==========================
-' =========================================================
 
-Function CreateMissingText(doc As Document, txt As String) As Shape
+' ================== ТЕКСТ ОШИБОК =========================
+
+Function CreateErrorText(doc As Document, txt As String) As Shape
 
     Dim s As Shape
     Set s = doc.ActiveLayer.CreateArtisticText(0, 0, txt)
 
     With s.Text.Story.Characters.All
-        .Size = MISSING_TEXT_SIZE
-        .Fill.UniformColor.RGBAssign 255, 0, 0
+        .Size = ERROR_TEXT_SIZE
+        .Fill.UniformColor.RGBAssign ERR_R, ERR_G, ERR_B
     End With
 
-    Set CreateMissingText = s
+    Set CreateErrorText = s
 
 End Function
 
 
-' =========================================================
-' ================= ПОИСК ГРУППЫ ==========================
-' =========================================================
+' ================== ПОИСК ГРУППЫ =========================
 
 Function FindGroupByName(doc As Document, groupName As String) As Shape
 
@@ -192,17 +282,8 @@ Function FindGroupByName(doc As Document, groupName As String) As Shape
 
 End Function
 
-' =========================================================
-' ============ ПРОВЕРКА ФАЙЛА =============================
-' =========================================================
 
-Function FileExists(path As String) As Boolean
-    FileExists = (Dir(path) <> "")
-End Function
-
-' =========================================================
-' ============ ЧТЕНИЕ UTF-8 ===============================
-' =========================================================
+' ================== UTF-8 ================================
 
 Function ReadUtf8Lines(filePath As String) As Collection
 
@@ -211,13 +292,13 @@ Function ReadUtf8Lines(filePath As String) As Collection
     Set stm = CreateObject("ADODB.Stream")
 
     With stm
-        .Type = 2            ' text
+        .Type = 2
         .CharSet = "utf-8"
         .Open
         .LoadFromFile filePath
 
         Do Until .EOS
-            lines.Add Trim(.ReadText(-2)) ' читать построчно
+            lines.Add Trim(.ReadText(-2))
         Loop
 
         .Close
