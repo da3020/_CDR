@@ -1,10 +1,13 @@
 Option Explicit
 
 ' =========================================================
-' Version: 1.3
+' Version: 1.3.1
 ' CorelDRAW: 2021 (25.0.0.230)
 '
-' Используется внешний индекс _FLAG_INDEX.txt
+' Изменения:
+' - поддержка ведущих нулей в именах групп
+' - поиск группы по артикулу + размеру
+' - информативный текст при отсутствии группы
 ' =========================================================
 
 
@@ -60,18 +63,24 @@ Sub CollectFlagsToPrint()
         Dim suffix As String
         ParseArticle CStr(line), baseArticle, suffix
 
+        Dim sizePart As String
+        sizePart = GetSizePartBySuffix(suffix)
+
         Dim placedShape As Shape
 
+        ' -------- ФАЙЛ НЕ НАЙДЕН --------
         If Not indexMap.Exists(baseArticle) Then
 
             Set placedShape = CreateErrorText(outputDoc, _
                 baseArticle & " — ФАЙЛ НЕ НАЙДЕН")
 
+        ' -------- ДУБЛИКАТЫ --------
         ElseIf indexMap(baseArticle).Count > 1 Then
 
             Set placedShape = CreateErrorText(outputDoc, _
                 baseArticle & " — НАЙДЕНЫ ДУБЛИКАТЫ")
 
+        ' -------- ФАЙЛ НАЙДЕН --------
         Else
 
             Dim path As String
@@ -80,18 +89,17 @@ Sub CollectFlagsToPrint()
             Dim doc As Document
             Set doc = Application.OpenDocument(path)
 
-            Dim groupName As String
-            groupName = GetGroupName(baseArticle, suffix)
-
             Dim shp As Shape
-            Set shp = FindGroupByName(doc, groupName)
+            Set shp = FindGroupByArticleAndSize(doc, baseArticle, sizePart)
 
             If Not shp Is Nothing Then
                 shp.Copy
                 Set placedShape = outputDoc.ActiveLayer.Paste
             Else
                 Set placedShape = CreateErrorText(outputDoc, _
-                    baseArticle & " — ГРУППА НЕ НАЙДЕНА")
+                    baseArticle & " — " & suffix & " " & _
+                    baseArticle & ":" & sizePart & _
+                    " ГРУППА НЕ НАЙДЕНА")
             End If
 
             doc.Close
@@ -168,17 +176,68 @@ Sub ParseArticle(src As String, ByRef baseArticle As String, ByRef suffix As Str
 End Sub
 
 
-Function GetGroupName(article As String, suffix As String) As String
+Function GetSizePartBySuffix(suffix As String) As String
 
     Select Case suffix
-        Case "S": GetGroupName = article & ":60x40"
-        Case "M": GetGroupName = article & ":105x70"
-        Case "L": GetGroupName = article & ":225x150"
-        Case Else: GetGroupName = article & ":135x90"
+        Case "S": GetSizePartBySuffix = "60x40"
+        Case "M": GetSizePartBySuffix = "105x70"
+        Case "L": GetSizePartBySuffix = "225x150"
+        Case Else: GetSizePartBySuffix = "135x90"
     End Select
 
 End Function
 
+
+' ================== ПОИСК ГРУППЫ ==========================
+
+Function FindGroupByArticleAndSize(doc As Document, _
+                                   article As String, _
+                                   sizePart As String) As Shape
+
+    Dim p As Page
+    Dim s As Shape
+
+    Dim targetArticle As Long
+    targetArticle = CLng(article)
+
+    For Each p In doc.Pages
+        For Each s In p.Shapes.All
+
+            If s.Type = cdrGroupShape Then
+
+                Dim grpName As String
+                grpName = s.Name   ' например 0264:225x150
+
+                If InStr(grpName, ":") > 0 Then
+
+                    Dim parts() As String
+                    parts = Split(grpName, ":")
+
+                    If UBound(parts) = 1 Then
+
+                        Dim grpArticle As Long
+                        On Error Resume Next
+                        grpArticle = CLng(parts(0))
+                        On Error GoTo 0
+
+                        If grpArticle = targetArticle _
+                           And parts(1) = sizePart Then
+
+                            Set FindGroupByArticleAndSize = s
+                            Exit Function
+                        End If
+                    End If
+                End If
+            End If
+        Next s
+    Next p
+
+    Set FindGroupByArticleAndSize = Nothing
+
+End Function
+
+
+' ================== РАСКЛАДКА ============================
 
 Sub PlaceInGrid(s As Shape, index As Long)
 
@@ -195,6 +254,8 @@ Sub PlaceInGrid(s As Shape, index As Long)
 End Sub
 
 
+' ================== ТЕКСТ ОШИБОК =========================
+
 Function CreateErrorText(doc As Document, txt As String) As Shape
 
     Dim s As Shape
@@ -210,24 +271,7 @@ Function CreateErrorText(doc As Document, txt As String) As Shape
 End Function
 
 
-Function FindGroupByName(doc As Document, groupName As String) As Shape
-
-    Dim p As Page
-    Dim s As Shape
-
-    For Each p In doc.Pages
-        For Each s In p.Shapes.All
-            If s.Type = cdrGroupShape And s.Name = groupName Then
-                Set FindGroupByName = s
-                Exit Function
-            End If
-        Next s
-    Next p
-
-    Set FindGroupByName = Nothing
-
-End Function
-
+' ================== UTF-8 ================================
 
 Function ReadUtf8Lines(filePath As String) As Collection
 
